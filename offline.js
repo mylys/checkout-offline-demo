@@ -1,0 +1,9 @@
+(() => {
+ const list=[]; const response=x=>Response.json(x); const data=Object.fromEntries('countries products buyers advanced callbacks shipping billing rules'.split(' ').map(k=>[k,[]]));
+ window.fetch=async(path,opts={})=>{const p=String(path).split('?')[0], b=JSON.parse(opts.body||'{}'); switch(p){
+ case '/api/config':return response({env:'sandbox',credentials:{sandbox:{configured:false},production:{configured:false}},merchants:{sandbox:[],production:[]},selectedMerchantIds:{}});
+ case '/api/profiles':return response({version:1,data});case '/api/payment-config':return response({version:1,rows:window.CheckoutOptions.rows});case '/api/orders':return response({orders:list});
+ case '/api/mock':{const v=b.bizContent,o={id:crypto.randomUUID(),env:'sandbox',mode:b.mode,merchantTransactionId:v.merchantTransactionId,amount:v.amount,currency:v.currency,status:'SIMULATED',simulated:true,createdAt:new Date().toISOString()};list.unshift(o);return response({order:o,simulated:true,status:o.status});}
+ case '/api/mock-result':{const o=list.find(o=>o.id===b.id);if(o)o.status=String(b.status);return response({order:o});}case '/api/orders/delete':{const i=list.findIndex(o=>o.id===b.id);if(i>=0)list.splice(i,1);return response({});}case '/api/orders/logs':return response({logs:[]});default:return Response.json({error:'GitHub Pages 离线版不提供此后端操作。'},{status:403});}};
+ document.addEventListener('DOMContentLoaded',()=>{document.querySelector('.brand small').textContent='离线模拟 · 不连接支付网关';const f=document.getElementById('checkoutForm');f.onsubmit=e=>{e.preventDefault();submit(true)};for(const id of ['openMerchantConfig','envMenuToggle','refreshIP']){const el=document.getElementById(id);el.onclick=()=>alert('离线模拟：不连接网关，不使用商户凭据。');} });
+})();
