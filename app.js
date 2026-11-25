@@ -193,7 +193,7 @@ $('productionTestMode').onchange = () => {
   clearCheckoutSession(); renderConfig(); renderProfileSafety();
 };
 function renderProfileSafety() {
-  $('profileSafety').textContent = productionTesting() ? '生产联调已启用 · 真实网关，可能扣款' : syntheticProfile || syntheticAddress || sandboxFixture ? '含测试资料 · 生产提交需启用联调或清空资料' : '';
+  $('profileSafety').textContent = productionTesting() ? '生产参数演示 · 模拟下单' : syntheticProfile || syntheticAddress || sandboxFixture ? '含测试资料 · 生产提交需启用联调或清空资料' : '';
 }
 function productionProfileAllowed(item) {
   return currentEnv !== 'production' || productionTesting() || (!item.synthetic && !Object.values(item).some(value => typeof value === 'string' && value.includes('{{origin}}')));
@@ -270,8 +270,8 @@ function applyProfile(section, item, automatic = false) {
         ipRevision++; ipRequest++;
         setAuxStatus('ipStatus', '使用买家预设中的 IP，可手工修改。');
       }
-      if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id) && ['localhost','127.0.0.1','[::1]'].includes(location.hostname)) {
-        value = value.replaceAll('{{origin}}', location.origin); syntheticProfile = true;
+      if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id) ) {
+        value = value.replaceAll('{{origin}}', new URL('.', location.href).href.replace(/\/$/, '')); syntheticProfile = true;
       }
       $(id).value = value;
     }
@@ -365,7 +365,7 @@ async function downloadFile(path, statusId) {
   try {
     const spec = downloads[path], url = new URL(path, location.origin);
     if (!spec || url.origin !== location.origin) throw new Error('仅允许下载本站配置文件');
-    const response = await fetch(path, { cache: 'no-store', credentials: 'same-origin', redirect: 'error' });
+    const response = await window.demoRequest(path, { cache: 'no-store', credentials: 'same-origin', redirect: 'error' });
     const type = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!response.ok) {
       let message = `下载失败（HTTP ${response.status}）`;
@@ -470,7 +470,7 @@ async function openConfigDialog() {
   finally { busy = false; renderConfig(); }
 }
 $('envMenuToggle').onclick = () => { const open = $('envMenu').hidden; $('envMenu').hidden = !open; $('envMenuToggle').setAttribute('aria-expanded', String(open)); };
-$('openMerchantConfig').onclick = openConfigDialog;
+$('openMerchantConfig').onclick = () => $('openLocal').click();
 $('closeConfig').onclick = () => { if (discardCredentialEdits()) $('configDialog').close(); };
 $('configDialog').addEventListener('cancel', event => { if (!discardCredentialEdits()) event.preventDefault(); });
 $('configDialog').addEventListener('close', clearCredentials);
@@ -546,7 +546,7 @@ function synchronizeAmount(source) {
 }
 const fieldNames = { elementType:'Element SDK 组件', amount:'支付金额', currency:'币种', tradeCountry:'国家／地区', merchantTransactionId:'商户订单号', productName:'商品名称', productType:'商品类型', productImageUrl:'商品图片 URL', unitPrice:'商品单价', quantity:'数量', customerEmail:'买家邮箱', merchantUserId:'商户用户 ID', shopperIP:'买家公网 IP', captureDelayHours:'收款延迟', payResultUrl:'成功回跳 URL', payCancelUrl:'取消回跳 URL', notificationUrl:'异步通知 URL' };
 for (const section of ['shipping', 'billing']) for (const [field, label] of Object.entries({country:'国家／地区', state:'州／省', city:'城市', street:'街道', postcode:'邮编'})) fieldNames[section + field[0].toUpperCase() + field.slice(1)] = `${section === 'shipping' ? '配送' : '账单'}${label}`;
-function updateRequired(simulated = false) {
+function updateRequired(simulated = true) {
   const physical = $('productType').value === 'N';
   const required = new Set(['amount','currency','merchantTransactionId','productName','productType','unitPrice','quantity']);
   if (!simulated) {
@@ -617,7 +617,7 @@ async function api(url, options) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const response = await fetch(url, { cache:'no-store', ...options, signal:controller.signal });
+    const response = await window.demoRequest(url, { cache:'no-store', ...options, signal:controller.signal });
     const data = await response.json();
     if (!response.ok || data.error) { const error = new Error(data.error || `请求失败（HTTP ${response.status}）`); if (typeof data.sessionId === 'string') error.sessionId = data.sessionId; throw error; }
     return data;
@@ -665,7 +665,7 @@ function renderConfig() {
   $('envBadge').className = `badge ${currentEnv === 'production' ? 'prod' : 'sandbox'}`;
   $('submitLabel').textContent = busy ? '正在处理…' : '模拟下单';
   $('submitBtn').setAttribute('aria-busy', String(busy));
-  $('submitBtn').title = `${currentEnv === 'production' ? '生产' : '沙箱'}环境 · ${item?.configured ? '创建真实支付会话' : '未配置，禁止真实调用'}`;
+  $('submitBtn').title = '在浏览器中模拟下单';
   $('submitBtn').disabled = busy;
   $('saveConfig').disabled = busy || !credentialsLoaded;
   for (const id of ['editRemark', 'editAccId', 'editClientId', 'editSalt']) $(id).disabled = busy || !credentialsLoaded;
@@ -1040,7 +1040,7 @@ $('refreshBtn').onclick = async () => {
   finally { busy = false; renderConfig(); }
 };
 $('reloadOrders').onclick = () => refreshOrders().catch(showError);
-$('checkoutForm').onsubmit = event => { event.preventDefault(); submit(false); };
+$('checkoutForm').onsubmit = event => { event.preventDefault(); submit(true); };
 document.querySelectorAll('.env-btn').forEach(btn => btn.onclick = async () => {
   if (busy || !discardCredentialEdits()) return;
   closeEnvMenu();
@@ -1100,7 +1100,7 @@ async function fetchPublicIP(replace = false) {
   if (revision !== ipRevision || $('shopperIP').value !== initial || (!replace && initial.trim())) { setAuxStatus('ipStatus', '已保留手工填写的 IP。'); return; }
   $('shopperIP').value = data.ip;
   setAuxStatus('ipStatus', data.fallback
-    ? '公网 IP 获取失败，已填入默认值 192.0.2.1；这不是检测到的真实出口，请核对或手工修改。'
+    ? '离线演示使用示例 IP 192.0.2.1，可手工修改。'
     : '已填入本机网络出口 IPv4，可手工修改；代理／VPN 可能影响出口。', data.fallback ? 'error' : 'info');
 }
 async function generateTestAddress() {
