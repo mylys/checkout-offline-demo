@@ -2,45 +2,67 @@
   const origin = 'http://127.0.0.1:18791';
   const dialog = document.getElementById('localWorkspaceDialog');
   const viewport = document.getElementById('localViewport');
+  const menu = document.getElementById('localTools');
   const status = document.getElementById('localStatus');
-  const launch = document.getElementById('loadLocal');
-  let timer;
-  document.getElementById('openLocal').onclick = () => dialog.showModal();
-  document.getElementById('closeLocal').onclick = () => dialog.close();
-  dialog.addEventListener('close', () => {
-    clearTimeout(timer);
-    dialog.classList.remove('loading', 'connected');
-    viewport.replaceChildren();
-    document.getElementById('updateLocal').hidden = true;
-    document.getElementById('localTitle').textContent = '本地联调';
-    status.textContent = 'v1.2.0 · 127.0.0.1:18791';
-    launch.textContent = '在此页加载';
-  });
-  launch.onclick = () => {
-    clearTimeout(timer);
-    dialog.classList.add('loading');
-    status.textContent = '正在连接本机。如浏览器询问，请允许访问本地网络。';
+  const entry = document.getElementById('openLocal');
+  let deadline, retry;
+
+  function clearTimers() {
+    clearTimeout(deadline);
+    clearTimeout(retry);
+  }
+
+  function retryIfVisible() {
+    if (dialog.open && dialog.classList.contains('waiting') && !document.hidden) connect();
+  }
+
+  function connect() {
+    clearTimers();
     const frame = document.createElement('iframe');
     frame.title = '本机支付联调工作区';
     frame.referrerPolicy = 'unsafe-url';
     frame.allow = 'payment; local-network-access; loopback-network';
     frame.src = origin + '/pages';
     viewport.replaceChildren(frame);
-    timer = setTimeout(() => {
-      dialog.classList.remove('loading');
-      viewport.replaceChildren();
-      launch.textContent = '重新连接';
-      status.textContent = '尚未连上本机。请确认启动窗口仍在运行；若浏览器限制内嵌访问，请选择“独立窗口打开”。';
-    }, 15000);
-  };
+    deadline = setTimeout(() => {
+      if (!dialog.open || viewport.firstElementChild !== frame) return;
+      dialog.classList.add('waiting');
+      status.textContent = '尚未连接 127.0.0.1:18791。请确认启动窗口已打开，并允许浏览器访问本地网络。';
+      retry = setTimeout(retryIfVisible, 15000);
+    }, 8000);
+  }
+
+  function openWorkspace() {
+    if (dialog.open) return;
+    dialog.showModal();
+    connect();
+  }
+
   window.addEventListener('message', event => {
-    const frame = viewport.querySelector('iframe');
-    if (event.origin !== origin || !frame || event.source !== frame.contentWindow || event.data?.type !== 'checkout-local-ready') return;
-    clearTimeout(timer);
-    dialog.classList.remove('loading');
+    if (!dialog.open || event.origin !== origin || event.source !== viewport.firstElementChild?.contentWindow || event.data?.type !== 'checkout-local-ready') return;
+    clearTimers();
+    dialog.classList.remove('waiting');
     dialog.classList.add('connected');
+    viewport.inert = false;
     const version = event.data.version;
-    document.getElementById('localTitle').textContent = /^\d+\.\d+\.\d+$/.test(version) ? '本地联调 · v' + version : '本地联调';
+    document.getElementById('localVersion').textContent = /^\d+\.\d+\.\d+$/.test(version) ? '本地联调 · v' + version : '本地联调';
     document.getElementById('updateLocal').hidden = version !== '1.1.0';
+    viewport.firstElementChild.focus();
   });
+
+  dialog.addEventListener('close', () => {
+    clearTimers();
+    dialog.classList.remove('waiting', 'connected');
+    viewport.replaceChildren();
+    viewport.inert = true;
+    menu.open = false;
+    status.textContent = '正在连接本机联调台…';
+    entry.focus();
+  });
+  document.getElementById('loadLocal').onclick = connect;
+  document.getElementById('closeLocal').onclick = () => dialog.close();
+  document.getElementById('showOffline').onclick = () => dialog.close();
+  entry.onclick = openWorkspace;
+  document.addEventListener('visibilitychange', retryIfVisible);
+  openWorkspace();
 })();
