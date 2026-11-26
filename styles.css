@@ -118,3 +118,8 @@ dialog>.panel-head,.config-panel>.panel-head{padding:0 0 16px;margin-bottom:16px
 @media(max-width:680px){.topbar{position:relative}.local-entry{position:absolute;top:12px;right:16px}}
 
 .local-popout{display:none}.connected .local-popout{display:inline;margin-left:auto;color:var(--teal);text-underline-offset:3px;font-size:13px}
+
+.return-panel { max-width: 34rem; margin: 12vh auto 0; padding: 24px; }
+.return-panel h1 { margin: 0; font-size: 22px; }
+.return-panel p { margin: 12px 0 20px; line-height: 1.7; }
+.return-panel a { display: inline-flex; align-items: center; text-decoration: none; }

@@ -174,15 +174,16 @@ function setEnvironment(env) {
   currentEnv = env;
 }
 function productionTesting() { return currentEnv === 'production' && $('productionTestMode').checked; }
-const testReturns = {payResultUrl:'https://example.com/?result=success',payCancelUrl:'https://example.com/?result=cancel'};
-const callbackFields = [...Object.keys(testReturns),'notificationUrl'];
-function productionUrl(id, value, useTestReturns) {
-  const placeholder = useTestReturns ? testReturns[id] || '' : '';
-  if (!value || value.includes('{{origin}}') || value === testReturns[id]) return placeholder;
+const returnPage = 'https://mylys.github.io/checkout-offline-demo/return.html';
+const productionReturns = {payResultUrl:returnPage + '?result=success',payCancelUrl:returnPage + '?result=cancel'};
+const callbackFields = [...Object.keys(productionReturns),'notificationUrl'];
+function productionUrl(id, value) {
+  const fallback = productionReturns[id] || '';
+  if (!value || value.includes('{{origin}}')) return fallback;
   try {
     const url = new URL(value);
     if (url.protocol === 'http:' && !url.username && !url.password) {
-      if (['localhost','127.0.0.1','[::1]'].includes(url.hostname)) return id === 'notificationUrl' ? value : placeholder;
+      if (['localhost','127.0.0.1','[::1]'].includes(url.hostname)) return id === 'notificationUrl' ? value : fallback;
       url.protocol = 'https:';
       return url.href;
     }
@@ -190,18 +191,17 @@ function productionUrl(id, value, useTestReturns) {
   return value;
 }
 function applyProductionUrls() {
-  for (const id of callbackFields) $(id).value = productionUrl(id,$(id).value.trim(),productionTesting());
+  for (const id of callbackFields) $(id).value = productionUrl(id,$(id).value.trim());
 }
 for (const id of callbackFields) $(id).addEventListener('change', () => {
   const value = $(id).value.trim();
-  if (currentEnv === 'production' && /^http:\/\//i.test(value)) $(id).value = productionUrl(id,value,false) || value;
+  if (currentEnv === 'production' && /^http:\/\//i.test(value)) $(id).value = productionUrl(id,value) || value;
 });
 function fillTestReturns() {
   if (!productionTesting()) return;
   applyProductionUrls();
   $('callbackPreset').value = '';
-  syntheticProfile = true;
-  setAuxStatus('profileStatus', '已补齐 HTTPS 联调回跳。正式收款请填写商户自己的成功、取消和异步通知地址。');
+  setAuxStatus('profileStatus', '成功与取消默认返回 GitHub Pages，可改为商户自己的 HTTPS 回跳地址。');
   renderProfileSafety(); updateRequired();
 }
 $('fillTestReturns').onclick = fillTestReturns;
@@ -223,7 +223,7 @@ function applyProductionDefaults() {
   if (!$('quantity').value) $('quantity').value = '1';
   if (!$('captureDelayHours').value) $('captureDelayHours').value = '0';
   renderProfileSelectors(); syncBilling(); synchronizeAmount(amountEdited ? 'amount' : 'quantity'); updateRequired(); renderProfileSafety();
-  setAuxStatus('profileStatus', `${cleared ? '已清空沙箱测试业务资料。' : ''}生产基础默认：数量 1、收款延迟 0（立即扣款）；已有手填值保留。生产联调使用 HTTPS 回跳占位，正式收款请填写商户 HTTPS 地址。`);
+  setAuxStatus('profileStatus', `${cleared ? '已清空沙箱测试业务资料。' : ''}生产基础默认：数量 1、收款延迟 0（立即扣款）；已有手填值保留。成功与取消默认返回 GitHub Pages，可改为商户自己的 HTTPS 回跳地址。`);
 }
 $('applyProductionDefaults').onclick = applyProductionDefaults;
 function renderProfileSelectors() {
@@ -292,7 +292,7 @@ function applyProfile(section, item, automatic = false) {
       if (section === 'callbacks' && currentEnv === 'production') {
         // 沙箱模板在生产联调使用 HTTPS 回跳，同时保留已填写的商户端点。
         if (automatic && (value.includes('{{origin}}') || !value) && $(id).value) value = $(id).value;
-        value = productionUrl(id,value,productionTesting());
+        value = productionUrl(id,value);
       } else if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id) ) {
         value = value.replaceAll('{{origin}}', new URL('.', location.href).href.replace(/\/$/, '')); syntheticProfile = true;
       }
