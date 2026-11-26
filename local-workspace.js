@@ -11,8 +11,9 @@
     clearTimeout(timer);
     dialog.classList.remove('loading', 'connected');
     viewport.replaceChildren();
+    document.getElementById('updateLocal').hidden = true;
     document.getElementById('localTitle').textContent = '本地联调';
-    status.textContent = 'v1.1.0 · 127.0.0.1:18791';
+    status.textContent = 'v1.2.0 · 127.0.0.1:18791';
     launch.textContent = '在此页加载';
   });
   launch.onclick = () => {
@@ -38,6 +39,8 @@
     clearTimeout(timer);
     dialog.classList.remove('loading');
     dialog.classList.add('connected');
-    document.getElementById('localTitle').textContent = '本地联调 · 127.0.0.1';
+    const version = event.data.version;
+    document.getElementById('localTitle').textContent = /^\d+\.\d+\.\d+$/.test(version) ? '本地联调 · v' + version : '本地联调';
+    document.getElementById('updateLocal').hidden = version !== '1.1.0';
   });
 })();

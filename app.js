@@ -174,23 +174,40 @@ function setEnvironment(env) {
   currentEnv = env;
 }
 function productionTesting() { return currentEnv === 'production' && $('productionTestMode').checked; }
+const testReturns = {payResultUrl:'https://example.com/?result=success',payCancelUrl:'https://example.com/?result=cancel'};
+const callbackFields = [...Object.keys(testReturns),'notificationUrl'];
+function productionUrl(id, value, useTestReturns) {
+  const placeholder = useTestReturns ? testReturns[id] || '' : '';
+  if (!value || value.includes('{{origin}}') || value === testReturns[id]) return placeholder;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' && !url.username && !url.password) {
+      if (['localhost','127.0.0.1','[::1]'].includes(url.hostname)) return id === 'notificationUrl' ? value : placeholder;
+      url.protocol = 'https:';
+      return url.href;
+    }
+  } catch {}
+  return value;
+}
+function applyProductionUrls() {
+  for (const id of callbackFields) $(id).value = productionUrl(id,$(id).value.trim(),productionTesting());
+}
+for (const id of callbackFields) $(id).addEventListener('change', () => {
+  const value = $(id).value.trim();
+  if (currentEnv === 'production' && /^http:\/\//i.test(value)) $(id).value = productionUrl(id,value,false) || value;
+});
 function fillTestReturns() {
   if (!productionTesting()) return;
-  for (const [id, result] of [['payResultUrl','success'], ['payCancelUrl','cancel']]) {
-    const value = $(id).value.trim();
-    let replace = !value || value.includes('{{origin}}');
-    try { const url = new URL(value); replace ||= url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname); } catch {}
-    if (replace) $(id).value = `https://example.com/?result=${result}`;
-  }
+  applyProductionUrls();
   $('callbackPreset').value = '';
   syntheticProfile = true;
-  setAuxStatus('profileStatus', '已补齐空白或本机 HTTP 回跳。example.com 仅作 HTTPS 占位，不接收支付通知、不回到本 Demo；异步通知未修改。');
+  setAuxStatus('profileStatus', '已补齐 HTTPS 联调回跳。正式收款请填写商户自己的成功、取消和异步通知地址。');
   renderProfileSafety(); updateRequired();
 }
 $('fillTestReturns').onclick = fillTestReturns;
 $('productionTestMode').onchange = () => {
   if (busy) { $('productionTestMode').checked = !$('productionTestMode').checked; return; }
-  clearCheckoutSession(); renderConfig(); renderProfileSafety();
+  clearCheckoutSession(); applyProductionUrls(); renderConfig(); renderProfileSafety();
 };
 function renderProfileSafety() {
   $('profileSafety').textContent = productionTesting() ? '生产参数演示 · 模拟下单' : syntheticProfile || syntheticAddress || sandboxFixture ? '含测试资料 · 生产提交需启用联调或清空资料' : '';
@@ -202,10 +219,11 @@ function applyProductionDefaults() {
   if (currentEnv !== 'production') return;
   const cleared = !productionTesting() && (syntheticProfile || syntheticAddress || sandboxFixture);
   if (cleared) clearProfileData();
+  applyProductionUrls();
   if (!$('quantity').value) $('quantity').value = '1';
   if (!$('captureDelayHours').value) $('captureDelayHours').value = '0';
   renderProfileSelectors(); syncBilling(); synchronizeAmount(amountEdited ? 'amount' : 'quantity'); updateRequired(); renderProfileSafety();
-  setAuxStatus('profileStatus', `${cleared ? '已清空沙箱测试业务资料。' : ''}生产基础默认：数量 1、收款延迟 0（立即扣款）；已有手填值保留。真实商品、买家与地址及 HTTPS 成功／取消回跳需补齐，不自动生成。`);
+  setAuxStatus('profileStatus', `${cleared ? '已清空沙箱测试业务资料。' : ''}生产基础默认：数量 1、收款延迟 0（立即扣款）；已有手填值保留。生产联调使用 HTTPS 回跳占位，正式收款请填写商户 HTTPS 地址。`);
 }
 $('applyProductionDefaults').onclick = applyProductionDefaults;
 function renderProfileSelectors() {
@@ -221,7 +239,8 @@ function renderProfileSelectors() {
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = section === 'countries' ? '手工选择国家' : '手工填写／未选预设'; select.appendChild(empty);
     for (const item of (profiles?.data[section] || []).filter(productionProfileAllowed)) {
       const option = document.createElement('option'); option.value = item.id;
-      option.textContent = `${item.name}${item.synthetic ? ' · 测试' : ''}${item.country ? ` · ${item.country}` : ''}${item.currency ? ` / ${item.currency}` : ''}`;
+      const name = currentEnv === 'production' && section === 'callbacks' && item.id === 'callback-sandbox' && item.payResultUrl?.includes('{{origin}}') ? '生产 HTTPS 联调回跳' : item.name;
+      option.textContent = `${name}${item.synthetic ? ' · 测试' : ''}${item.country ? ` · ${item.country}` : ''}${item.currency ? ` / ${item.currency}` : ''}`;
       if (section === 'countries') option.disabled = !paymentRules.some(rule => rule.country === item.country && (!item.currency || rule.currency === item.currency));
       select.appendChild(option);
     }
@@ -270,7 +289,11 @@ function applyProfile(section, item, automatic = false) {
         ipRevision++; ipRequest++;
         setAuxStatus('ipStatus', '使用买家预设中的 IP，可手工修改。');
       }
-      if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id) ) {
+      if (section === 'callbacks' && currentEnv === 'production') {
+        // 沙箱模板在生产联调使用 HTTPS 回跳，同时保留已填写的商户端点。
+        if (automatic && (value.includes('{{origin}}') || !value) && $(id).value) value = $(id).value;
+        value = productionUrl(id,value,productionTesting());
+      } else if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id) ) {
         value = value.replaceAll('{{origin}}', new URL('.', location.href).href.replace(/\/$/, '')); syntheticProfile = true;
       }
       $(id).value = value;
