@@ -1,102 +1,55 @@
 (() => {
   const origin = 'http://127.0.0.1:18791';
-  const dialog = document.getElementById('localWorkspaceDialog');
-  const viewport = document.getElementById('localViewport');
-  const menu = document.getElementById('localTools');
-  const status = document.getElementById('localStatus');
-  const entry = document.getElementById('openLocal');
-  const lastConnection = 'checkout-offline-demo.local-connected';
-  let deadline, retry, demoInUse = false;
-
-  function clearTimers() {
-    clearTimeout(deadline);
-    clearTimeout(retry);
+  const dialog = document.getElementById('workspace');
+  const viewport = document.getElementById('viewport');
+  const status = document.getElementById('status');
+  const button = document.getElementById('connect');
+  let timer, automatic = true;
+  function reset() {
+    clearTimeout(timer);
+    viewport.replaceChildren();
+    button.disabled = false;
   }
-
-  function retryIfVisible() {
-    if (dialog.open && dialog.classList.contains('waiting') && !document.hidden) connect();
-  }
-
-  function connect() {
-    clearTimers();
+  function connect(manual) {
+    reset();
+    if (manual) { automatic = false; status.textContent = '正在连接这台电脑上的工作台…'; }
     const frame = document.createElement('iframe');
-    frame.title = '本机支付联调工作区';
+    frame.title = '本机支付工作台';
     frame.referrerPolicy = 'unsafe-url';
     frame.allow = 'payment; local-network-access; loopback-network';
     frame.src = origin + '/pages';
-    viewport.replaceChildren(frame);
-    status.textContent = '正在连接这台电脑上的联调台…';
-    deadline = setTimeout(() => {
-      if (viewport.firstElementChild !== frame) return;
-      if (!dialog.open) {
-        viewport.replaceChildren();
-        return;
-      }
-      dialog.classList.add('waiting');
-      status.textContent = '本机服务尚未连接。启动运行包后会自动重试；浏览器询问时，请允许访问本地网络。';
-      retry = setTimeout(retryIfVisible, 15000);
-    }, 8000);
+    viewport.appendChild(frame);
+    button.disabled = manual;
+    timer = setTimeout(() => {
+      reset();
+      if (manual) status.textContent = '请从桌面打开支付工作台，再点击连接。也可以直接使用工作台打开的浏览器窗口。';
+    },15000);
   }
-
-  async function connectOnArrival() {
-    // A new browser can use the demo without a local-network permission prompt.
-    try {
-      const permission = await navigator.permissions.query({name:'local-network-access'});
-      if (permission.state !== 'granted') return;
-    } catch {
-      // Without a permission signal, probe only on browsers previously connected here.
-      try { if (localStorage.getItem(lastConnection) !== '1') return; }
-      catch { return; }
-    }
-    if (!demoInUse && !dialog.open) connect();
-  }
-
-  function keepDemo() {
-    demoInUse = true;
-    if (!dialog.open) {
-      clearTimers();
-      viewport.replaceChildren();
-    }
-  }
-  document.addEventListener('pointerdown', keepDemo, {capture:true, once:true});
-  document.addEventListener('keydown', keepDemo, {capture:true, once:true});
-
-  entry.onclick = () => {
-    if (dialog.open) return;
-    demoInUse = true;
-    dialog.showModal();
-    connect();
-  };
-
   window.addEventListener('message', event => {
     const frame = viewport.firstElementChild;
     if (!frame || event.origin !== origin || event.source !== frame.contentWindow || event.data?.type !== 'checkout-local-ready') return;
-    clearTimers();
-    if (!dialog.open) {
-      if (demoInUse) return;
-      dialog.showModal();
+    clearTimeout(timer);
+    if (!/^[2-9]\d*\./.test(event.data.version)) {
+      reset();
+      status.textContent = '检测到旧版联调台。请退出旧版，再安装并打开支付工作台。';
+      return;
     }
-    try { localStorage.setItem(lastConnection,'1'); } catch {}
-    dialog.classList.remove('waiting');
-    dialog.classList.add('connected');
-    viewport.inert = false;
-    const version = event.data.version;
-    document.getElementById('localVersion').textContent = /^\d+\.\d+\.\d+$/.test(version) ? '本地联调 · v' + version : '本地联调';
-    document.getElementById('updateLocal').hidden = version !== '1.1.0';
+    status.textContent = '';
+    if (!dialog.open) dialog.showModal();
+    button.disabled = false;
     frame.focus();
   });
-
-  dialog.addEventListener('close', () => {
-    clearTimers();
-    dialog.classList.remove('waiting', 'connected');
-    viewport.replaceChildren();
-    viewport.inert = true;
-    menu.open = false;
-    entry.focus();
-  });
-  document.getElementById('loadLocal').onclick = connect;
-  document.getElementById('closeLocal').onclick = () => dialog.close();
-  document.getElementById('showOffline').onclick = () => dialog.close();
-  document.addEventListener('visibilitychange', retryIfVisible);
-  connectOnArrival();
+  button.onclick = () => connect(true);
+  document.getElementById('close').onclick = () => dialog.close();
+  dialog.addEventListener('close',()=>{automatic=false;reset();button.focus();});
+  function stopBackgroundProbe() {
+    if (!automatic) return;
+    automatic=false;
+    if (!dialog.open) reset();
+  }
+  document.addEventListener('pointerdown',stopBackgroundProbe,{once:true,capture:true});
+  document.addEventListener('keydown',stopBackgroundProbe,{once:true,capture:true});
+  navigator.permissions?.query({name:'local-network-access'}).then(permission => {
+    if (permission.state === 'granted' && automatic) connect(false);
+  }).catch(()=>{});
 })();

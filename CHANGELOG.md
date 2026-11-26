@@ -1,5 +1,18 @@
 # 发布记录
 
+## v2.0.0 · 2026-11-26
+
+- GitHub Pages 提供 Windows x64 安装程序、Apple 芯片和 Intel Mac 磁盘映像（macOS 13 起）。工作台自带运行时，首次安装并打开后默认随用户登录启动，可从菜单栏或系统托盘切换。已运行的工作台可在同一页面全窗口使用。[下载入口](https://mylys.github.io/checkout-offline-demo/)
+- 移除模拟下单入口。每个工作台进程以空的生产和沙箱商户列表启动。用户手工导入 Excel 后可切换商户，下单前核对商户、金额与币种，由本机签名并发往所选网关。退出进程后清空签名密钥，浏览器刷新保留本次选择。本地保留订单与日志摘要。
+- 257 项自动化测试通过，使用本机测试网关验证第 127 个合成商户签名。Apple 芯片 Mac 实测从 DMG 安装、桌面启动、Chrome 导入 127 行、切换并刷新、重启后两个环境恢复为空。Intel Mac 包已挂载校验，Windows 包已解包校验 x64 可执行文件。Windows 和 Intel Mac 真机安装、跨系统登录自启、生产支付与公网异步通知待验证。本版本未使用 Apple Developer ID 公证或 Windows Authenticode 签名。
+- 安装包位于 [GitHub Release v2.0.0](https://github.com/mylys/checkout-offline-demo/releases/tag/v2.0.0)。Pages 由公开仓库 main 根目录发布，部署结果见 [GitHub Pages 部署记录](https://github.com/mylys/checkout-offline-demo/deployments/github-pages)。
+
+| 安装包 | SHA-256 |
+| --- | --- |
+| Checkout-2.0.0-windows-x64.exe | `d85169dfc1d8073cca5d6796aa80990efbadc3dfe4e4ecd1860fc17b85054d53` |
+| Checkout-2.0.0-mac-arm64.dmg | `b219106302f379968cace77126ba0bf0fd1fdcc63a16d001c8c93d2eea883037` |
+| Checkout-2.0.0-mac-x64.dmg | `ef11bda0b0ff2d4d2c3f966294e1598b5512f240251d52076cfbaa176481e3d5` |
+
 ## Pages v1.3.1 · 2026-11-26
 
 - 修复首次访问首页时全窗口等待本机服务的问题。访客可直接使用浏览器内的离线演示和模拟下单。已获本地网络权限的浏览器在后台连接 18791，收到本机就绪通知后才全窗口展示；操作演示时停止自动切换。
