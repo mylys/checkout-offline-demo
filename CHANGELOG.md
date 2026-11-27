@@ -12,7 +12,7 @@
 
 - 两个环境初始商户数均为零。手工导入的签名密钥仅用于当前页面，刷新、离开或清空时释放。原始交易日志与支付令牌仅在页面内存中使用，订单摘要及用户确认保存的资料和路由配置可在同一标签页刷新后读取。生产环境使用真实商户和业务资料，成功与取消回跳默认指向 Pages HTTPS 地址，异步通知填写商户自己的公网 HTTPS 接收地址。
 - 已使用 Chrome 和合成凭据验收 127 个商户、选商户签名、冲突导入回滚、订单 Excel 多方式回填、资料 Excel 与路由 JSON 保存、四种收银台、验签查单、退款与关单的拦截响应，以及错误签名和重复发起的处理。桌面 1440 × 900 和手机 390 × 844 对照使用同一笔沙箱表单。两个环境的六个网关接口都接受了来自 Pages 的跨域预检。
-- 真实付款、钱包授权和商户异步通知投递由商户使用自己的凭据验收。浏览器工作台直接运行于 GitHub Pages，配套桌面安装包版本为 v2.0.0。[打开工作台](https://mylys.github.io/checkout-offline-demo/) · [Pages 部署状态](https://github.com/mylys/checkout-offline-demo/deployments/github-pages)
+- 真实付款、钱包授权和商户异步通知投递由商户使用自己的凭据验收。v2.2.0 已部署至 GitHub Pages，公开首页通过 Chrome 下单流程复测，20 项在线资源与提交文件的 SHA-256 一致。首次加载时待界面就绪后开放操作。配套桌面安装包版本为 v2.0.0。[打开工作台](https://mylys.github.io/checkout-offline-demo/) · [Pages 部署状态](https://github.com/mylys/checkout-offline-demo/deployments/github-pages)
 - 截图左侧为 8791 v1.2.0 基线，右侧为 Pages v2.2.0。[桌面对照](docs/parity-desktop-v2.2.0.png) · [手机对照](docs/parity-mobile-v2.2.0.png)
 
 
