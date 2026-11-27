@@ -1,4 +1,4 @@
-import {ipVersion, newWorkbook, decode} from './workbook.js?v=2.2.1';
+import {ipVersion, newWorkbook, decode} from './workbook.js?v=2.3.0';
 const { countries, currencies, rows: defaultRows, compileRows } = globalThis.CheckoutOptions;
 const BASE = ['id','name','country','paymentMethod','currency','synthetic'];
 const SHEETS = {
@@ -29,6 +29,26 @@ export function geographicPresets(routes) {
     const currency = options.find(rule => rule.currency === preferred)?.currency || options[0].currency;
     return {id:'@country-' + country, country, name, language, currency};
   });
+}
+// These read-only checkout presets are independent of the editable sandbox workbook.
+export function productionPresets(returns) {
+  const data = emptyData();
+  for (const {value:country,label} of countries) {
+    const [state,city,postcode,language] = regions[country];
+    const base = {country, name:`${label} · 生产联调默认`};
+    const product = {...base, id:'@product-' + country, productName:label + '联调商品', productType:'N',
+      unitPrice:'10', quantity:'1', productImageUrl:'https://placehold.co/300x300.png', productDescription:''};
+    data.products.push(product);
+    if (country === 'SG') data.products.push({...product, id:'@product-SG-Paynow', name:'Paynow · 生产联调默认',
+      paymentMethod:'Paynow', productType:'Y', unitPrice:'20'});
+    data.buyers.push({...base, id:'@buyer-' + country, customerEmail:`checkout-${country.toLowerCase()}@example.com`, language, shopperIP:''});
+    const address = {...base, addressCountry:country, state, city, postcode, street:'1 Example Street'};
+    data.shipping.push({...address,id:'@shipping-' + country});
+    data.billing.push({...address,id:'@billing-' + country,sameAsShipping:true});
+  }
+  data.advanced.push({id:'@advanced',name:'立即扣款',captureDelayHours:'0',merchantUserId:''});
+  data.callbacks.push({id:'@callbacks',name:'工作台 HTTPS 回跳',...returns,notificationUrl:''});
+  return data;
 }
 function defaults(paymentRows = defaultRows) {
   const data = emptyData(), valid = compileRows(paymentRows).rules;

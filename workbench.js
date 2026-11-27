@@ -1,5 +1,5 @@
-import {api,post,download} from './browser-api.js?v=2.2.1';
-import {geographicPresets} from './profile-config.js?v=2.2.1';
+import {api,post,download} from './browser-api.js?v=2.3.0';
+import {geographicPresets,productionPresets} from './profile-config.js?v=2.3.0';
 let currentEnv = 'production';
 let currentMode = 'redirect';
 let config = null;
@@ -180,6 +180,11 @@ function initOptions() {
 function setEnvironment(env) { currentEnv = env; }
 const returnPage = 'https://mylys.github.io/checkout-offline-demo/return.html';
 const productionReturns = {payResultUrl:returnPage + '?via=web&flow=return',payCancelUrl:returnPage + '?via=web&flow=cancel'};
+const productionProfiles = productionPresets(productionReturns);
+function availableProfiles(section) {
+  const configured = profiles?.data[section] || [];
+  return currentEnv === 'production' && $('tradeCountry').value ? [...configured,...productionProfiles[section]] : configured;
+}
 const callbackFields = [...Object.keys(productionReturns),'notificationUrl'];
 function productionUrl(id, value) {
   const fallback = productionReturns[id] || '';
@@ -202,7 +207,9 @@ for (const id of callbackFields) $(id).addEventListener('change', () => {
   if (currentEnv === 'production' && /^http:\/\//i.test(value)) $(id).value = productionUrl(id,value) || value;
 });
 function renderProfileSafety() {
-  $('profileSafety').textContent = syntheticProfile || syntheticAddress || sandboxFixture ? '沙箱合成资料' : '';
+  const defaultsInUse = ['buyers','shipping','billing'].some(section => appliedProfiles.get(section)?.item.id.startsWith('@'));
+  $('profileSafety').textContent = syntheticProfile || syntheticAddress || sandboxFixture ? '沙箱合成资料'
+    : currentEnv === 'production' && defaultsInUse ? '生产联调使用示例资料。实际收款时请核对买家邮箱和地址。' : '';
 }
 function productionProfileAllowed(item) {
   return currentEnv !== 'production' || (!item.synthetic && !Object.values(item).some(value => typeof value === 'string' && value.includes('{{origin}}')));
@@ -226,9 +233,10 @@ function applyProductionDefaults() {
   if (!$('quantity').value) $('quantity').value = '1';
   if (!$('captureDelayHours').value) $('captureDelayHours').value = '0';
   renderProfileSelectors(); syncBilling(); synchronizeAmount(amountEdited ? 'amount' : 'quantity'); updateRequired(); renderProfileSafety();
-  setAuxStatus('profileStatus', `${cleared ? '已清空沙箱测试业务资料。' : ''}生产基础默认：数量 1、收款延迟 0（立即扣款）；已有手填值保留。成功与取消默认返回 GitHub Pages，可改为商户自己的 HTTPS 回跳地址。`);
+  if (cleared && !$('shopperIP').value) fetchPublicIP();
+  if (!$('tradeCountry').value) setAuxStatus('profileStatus', '选择国家后会填入生产联调资料。');
 }
-$('applyProductionDefaults').onclick = applyProductionDefaults;
+$('applyProductionDefaults').onclick = () => { applyProductionDefaults(); selectCountryDefaults(null,true); applyMatchingProfiles(); };
 function renderProfileSelectors() {
   const sampleButton = $('useCountrySample');
   const country = $('tradeCountry').value;
@@ -247,7 +255,7 @@ function renderProfileSelectors() {
     const select = $(info.select), previous = select.value;
     select.replaceChildren();
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = section === 'countries' ? '手工选择国家' : '手工填写／未选预设'; select.appendChild(empty);
-    const candidates = section === 'countries' ? countryPresets() : (profiles?.data[section] || []).filter(matchesRoute);
+    const candidates = section === 'countries' ? countryPresets() : availableProfiles(section).filter(matchesRoute);
     const allowed = candidates.filter(productionProfileAllowed);
     for (const item of allowed) {
       const option = document.createElement('option'); option.value = item.id;
@@ -264,7 +272,7 @@ function renderProfileSelectors() {
         for (const row of samples) group.append(new Option(row.name,'@sandbox:' + row.id));
         select.append(group);
       }
-      if (!allowed.length) select.add(new Option('导入生产资料 Excel…','@profiles'));
+      select.add(new Option('导入自定义生产资料…','@profiles'));
     }
     select.value = [...select.options].some(option => option.value === previous) ? previous : '';
   }
@@ -302,6 +310,7 @@ function applyProfile(section, item, automatic = false) {
   }
   const previous = appliedProfiles.get(section);
   if (previous && previous.item !== item) releaseProfile(section);
+  const retained = new Set();
   if (item.synthetic) syntheticProfile = true;
   if (section === 'shipping' || section === 'billing') {
     addressRevision++; addressRequest++;
@@ -320,7 +329,9 @@ function applyProfile(section, item, automatic = false) {
         setAuxStatus('ipStatus', '使用买家预设中的 IP，可手工修改。');
       }
       if (section === 'callbacks' && currentEnv === 'production') {
-        // 沙箱模板在生产联调使用 HTTPS 回跳，同时保留已填写的商户端点。
+        if (automatic && item.id === '@callbacks' && $(id).value && $(id).value !== productionReturns[id]) {
+          retained.add(id); continue;
+        }
         if (automatic && (value.includes('{{origin}}') || !value) && $(id).value) value = $(id).value;
         value = productionUrl(id,value);
       } else if (value.includes('{{origin}}') && ['payResultUrl','payCancelUrl'].includes(id)) {
@@ -335,7 +346,7 @@ function applyProfile(section, item, automatic = false) {
     if (!automatic) amountEdited = false;
     synchronizeAmount(amountEdited ? 'amount' : 'quantity');
   }
-  const fields = info.fields ? info.fields.filter(id => id !== 'shopperIP' || item.shopperIP)
+  const fields = info.fields ? info.fields.filter(id => !retained.has(id) && (id !== 'shopperIP' || item.shopperIP))
     : addressFields.map(field => section + field[0].toUpperCase() + field.slice(1));
   if (section === 'products' && !amountEdited) fields.push('amount');
   appliedProfiles.set(section,{item,country:$('tradeCountry').value,values:new Map(fields.map(id => [id,$(id).value]))});
@@ -354,7 +365,7 @@ function applyMatchingProfiles() {
   const country = $('tradeCountry').value, currency = $('currency').value;
   for (const [section,previous] of appliedProfiles) {
     if (previous.country !== country || !matchesRoute(previous.item) || !productionProfileAllowed(previous.item) ||
-        !profiles?.data[section].some(row => row.id === previous.item.id)) releaseProfile(section);
+        !availableProfiles(section).some(row => row.id === previous.item.id)) releaseProfile(section);
   }
   syncBilling();
   renderProfileSelectors();
@@ -371,13 +382,17 @@ function applyMatchingProfiles() {
   for (const [section, info] of Object.entries(profileSections)) {
     const candidates = profiles.data[section].filter(item => productionProfileAllowed(item) && matchesRoute(item));
     const specific = candidates.filter(item => item.country === country);
+    const builtins = currentEnv === 'production' ? productionProfiles[section].filter(matchesRoute) : [];
     const item = candidates.find(item => item.id === winner?.rule[info.reference])
-      || (specific.length === 1 ? specific[0] : undefined);
+      || (specific.length === 1 ? specific[0] : undefined)
+      || (currentEnv === 'production' && candidates.length === 1 ? candidates[0] : undefined)
+      || candidates.find(row => row.id === $(info.select).value)
+      || builtins.find(row => row.paymentMethod) || builtins[0];
     if (item) { applyProfile(section, item, true); applied.push(info.label); } else kept.push(info.label);
   }
   if (!winner) {
     const message = applied.length ? `${country} / ${currency} 已填入${applied.join('、')}。`
-      : currentEnv === 'production' ? `${country} / ${currency}：可从商品或买家下拉框导入生产资料，或切到沙箱使用示例。`
+      : currentEnv === 'production' ? `${country} / ${currency}：请选择适用的生产资料。`
       : `${country} / ${currency}：请在各分区选择或导入适用的资料。`;
     setAuxStatus('profileStatus',message,'notice');
     return;
@@ -422,7 +437,7 @@ for (const [section, info] of Object.entries(profileSections)) {
       return;
     }
     const sample = value.startsWith('@sandbox:');
-    const item = profiles?.data[section].find(item => item.id === (sample ? value.slice(9) : value));
+    const item = availableProfiles(section).find(item => item.id === (sample ? value.slice(9) : value));
     if (sample) {
       await switchEnvironment('sandbox');
       if (currentEnv !== 'sandbox') { renderProfileSelectors(); return; }
@@ -507,13 +522,19 @@ $('saveProfiles').onclick = async () => {
 function closeEnvMenu() { $('envMenu').hidden = true; $('envMenuToggle').setAttribute('aria-expanded', 'false'); }
 function selectedMerchantId(env = currentEnv) { return config?.selectedMerchantIds?.[env] || ''; }
 function selectedMerchant(env = currentEnv) { return (config?.merchants?.[env] || []).find(item => item.id === selectedMerchantId(env)); }
-function confirmLocalAction(message) {
+function confirmLocalAction(message, onConfirm) {
   const dialog = $('localConfirmDialog');
   if (dialog.open) return false;
   $('localConfirmText').textContent = message;
   dialog.returnValue = 'cancel';
   return new Promise(resolve => {
-    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once:true});
+    const form = dialog.querySelector('form');
+    const submitted = event => { if (event.submitter?.value === 'confirm') onConfirm?.(); };
+    form.addEventListener('submit',submitted);
+    dialog.addEventListener('close', () => {
+      form.removeEventListener('submit',submitted);
+      resolve(dialog.returnValue === 'confirm');
+    }, {once:true});
     dialog.showModal();
   });
 }
@@ -595,6 +616,59 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$
 document.addEventListener('focusin', event => { if (!$('envMenu').hidden && !event.target.closest('.environment-menu')) closeEnvMenu(); });
 const addressFields = ['country', 'state', 'city', 'street', 'postcode'];
 const textFields = ['amount', 'currency', 'merchantTransactionId', 'productName', 'unitPrice', 'customerEmail', 'language', 'shopperIP', 'merchantUserId', 'payResultUrl', 'payCancelUrl', 'notificationUrl', 'tradeCountry', 'paymentMethods'];
+const draftFields = [...new Set([...textFields,'elementType','methodSelection','countryPreset',
+  ...Object.values(profileSections).flatMap(info => [info.select,...(info.fields || [])]),
+  ...['shipping','billing'].flatMap(section => addressFields.map(key => section + key[0].toUpperCase() + key.slice(1)))])];
+const draftKey = 'checkout-offline-demo.web.form.v1';
+let draftReady = false;
+function saveDraft() {
+  if (!draftReady) return;
+  const fields = Object.fromEntries(draftFields.map(id => [id,$(id).value]));
+  // Keep track of the fields still owned by a preset, so a country change releases them.
+  const applied = Object.fromEntries([...appliedProfiles].map(([section,{item,values}]) =>
+    [section,{id:item.id,fields:[...values].filter(([id,value]) => fields[id] === value).map(([id]) => id)}]));
+  const draft = {env:currentEnv,mode:currentMode,fields,applied,sameBilling:$('sameBilling').checked,
+    amountEdited,orderNumberEdited,syntheticProfile,syntheticAddress,sandboxFixture};
+  try { sessionStorage.setItem(draftKey,JSON.stringify(draft)); } catch {}
+}
+function restoreDraft() {
+  let draft;
+  try { draft = JSON.parse(sessionStorage.getItem(draftKey)); } catch { return false; }
+  if (draft?.env !== currentEnv || !draft.fields) return false;
+  const {fields} = draft;
+  if (['redirect','embedded','onepage','elements'].includes(draft.mode)) currentMode = draft.mode;
+  $('elementType').value = fields.elementType || '';
+  $('tradeCountry').value = fields.tradeCountry || '';
+  renderRouting();
+  $('currency').value = fields.currency || '';
+  for (const method of (fields.paymentMethods || '').split(',')) if (routeMethods().includes(method)) selectedMethods.add(method);
+  renderMethodOptions();
+  renderProfileSelectors();
+  for (const id of draftFields) {
+    if (!['paymentMethods','methodSelection','tradeCountry','currency','elementType'].includes(id) && typeof fields[id] === 'string') $(id).value = fields[id];
+  }
+  if (currentMode !== 'elements' && typeof fields.methodSelection === 'string') commitMethodText(fields.methodSelection,false);
+  for (const section of Object.keys(profileSections)) {
+    const saved = draft.applied?.[section];
+    const item = availableProfiles(section).find(row => row.id === saved?.id && productionProfileAllowed(row) && matchesRoute(row));
+    if (item && Array.isArray(saved.fields)) appliedProfiles.set(section,{item,country:$('tradeCountry').value,
+      values:new Map(saved.fields.filter(id => draftFields.includes(id)).map(id => [id,$(id).value]))});
+  }
+  $('sameBilling').checked = draft.sameBilling === true;
+  amountEdited = draft.amountEdited === true; orderNumberEdited = draft.orderNumberEdited === true;
+  syntheticProfile = draft.syntheticProfile === true; syntheticAddress = draft.syntheticAddress === true; sandboxFixture = draft.sandboxFixture === true;
+  if (orders.some(order => order.merchantTransactionId === $('merchantTransactionId').value)) newOrderNo();
+  syncBilling(); updateRequired(); renderConfig(); renderProfileSafety();
+  setAuxStatus('profileStatus','已恢复本标签页的订单资料。');
+  return true;
+}
+function fillInitialProductionRoute() {
+  if (currentEnv !== 'production' || $('tradeCountry').value) return;
+  const preset = countryPresets().find(item => paymentRules.some(rule => rule.country === item.country && (!item.currency || rule.currency === item.currency)));
+  if (!preset) return;
+  $('tradeCountry').value = preset.country;
+  renderRouting(); selectCountryDefaults(preset); applyMatchingProfiles();
+}
 function newOrderNo() {
   const now = new Date();
   const stamp = [now.getFullYear() % 100, now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()].map(value => String(value).padStart(2, '0')).join('');
@@ -903,7 +977,7 @@ function mountSdkFrame(payload, request, generation) {
   if (generation !== sessionGeneration) return Promise.resolve();
   const frame = document.createElement('iframe');
   frame.className = 'sdk-checkout-frame'; frame.title = `${request.mode === 'onepage' ? 'OnePage' : request.mode === 'elements' ? 'Element SDK' : '内嵌收银台'}支付组件`;
-  frame.src = './sdk-host.html?v=2.2.1'; frame.referrerPolicy = 'no-referrer';
+  frame.src = './sdk-host.html?v=2.3.0'; frame.referrerPolicy = 'no-referrer';
   frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
   frame.setAttribute('allow', 'payment *');
   const channel = crypto.randomUUID();
@@ -1010,7 +1084,23 @@ async function mountEmbedded(biz, locale, generation, env = currentEnv) {
   if (typeof biz.token !== 'string' || !biz.token.trim()) throw new Error('未返回有效支付会话 token');
   return mountSdkFrame({sdkUrl,token:biz.token}, {mode:'embedded',env,bizContent:{language:locale}}, generation);
 }
-async function showResult(data, request, generation) {
+function reserveCashierPage() {
+  let child;
+  try {
+    child = window.open('about:blank','_blank');
+    if (!child) return null;
+    child.opener = null;
+    // about:blank initially inherits a copy of the opener's tab-scoped draft.
+    for (const key of Object.keys(child.sessionStorage)) {
+      if (key.startsWith('checkout-offline-demo.web.')) child.sessionStorage.removeItem(key);
+    }
+    child.document.documentElement.lang = 'zh-CN';
+    child.document.title = '正在打开收银台';
+    child.document.body.textContent = '正在创建支付会话，完成后会自动打开收银台。';
+    return child;
+  } catch { child?.close(); return null; }
+}
+async function showResult(data, request, generation, cashier) {
   $('resultPanel').hidden = false;
   $('resultStatus').className = `status-pill ${data.simulated || data.code === '000000' ? 'pending' : 'fail'}`;
   $('resultStatus').textContent = data.code === '000000' ? '会话已创建，未确认付款' : '支付接口返回失败';
@@ -1023,14 +1113,18 @@ async function showResult(data, request, generation) {
     if (request.mode === 'embedded') await mountEmbedded(data.bizContent || {}, request.bizContent.language, generation, request.env);
     else if (request.mode === 'redirect') {
       const paymentUrl = safePingPongUrl(data.bizContent?.paymentUrl);
-      const openButton = document.createElement('button');
-      openButton.className = 'secondary-btn';
-      openButton.textContent = '在新窗口打开 PingPong 收银台';
-      openButton.onclick = () => window.open(paymentUrl, '_blank', 'noopener,noreferrer');
-      $('resultContent').appendChild(openButton);
-      if (config?.sessionMerchants && window.top === window) { window.location.assign(paymentUrl); return; }
-      window.open(paymentUrl, '_blank', 'noopener,noreferrer');
-      $('checkoutResultHint').textContent = '已尝试在新窗口打开收银台；若被浏览器拦截，请点击下方按钮。最终支付状态以可信通知或服务端查询为准。';
+      const link = document.createElement('a');
+      link.className = 'secondary-btn'; link.href = paymentUrl;
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.textContent = '在新页面打开收银台';
+      $('resultContent').appendChild(link);
+      let opened = false;
+      if (cashier && !cashier.closed) {
+        try { cashier.location.replace(paymentUrl); opened = true; } catch {}
+      }
+      $('checkoutResultHint').textContent = opened ? '收银台已在新页面打开。付款后回到这里查询订单。' : '支付会话已创建。点击下方链接打开收银台，无需再次下单。';
+      $('resultPanel').scrollIntoView({behavior:'smooth',block:'nearest'});
+      return opened;
     }
   }
   $('resultPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1069,7 +1163,7 @@ async function refresh() {
   config = result; setEnvironment(config.env); renderConfig();
   await Promise.all([refreshOrders(), refreshPaymentConfig(), refreshProfiles()]);
   if (revision !== configRevision) return;
-  renderProfileSelectors(); if (currentEnv === 'production') applyProductionDefaults();
+  renderProfileSelectors(); if (currentEnv === 'production' && !draftReady) applyProductionDefaults();
 }
 async function submit() {
   if (busy) return;
@@ -1082,7 +1176,9 @@ async function submit() {
   request.bizContent.goods[0].unitPrice = fromMinor(toMinor(request.bizContent.goods[0].unitPrice));
   const merchantLabel = $('transactionMerchant').selectedOptions[0]?.textContent || '';
   const environmentLabel = currentEnv === 'production' ? '生产环境 · 可能产生真实扣款' : '沙箱环境';
-  if (!await confirmLocalAction(`确认发起交易？\n${environmentLabel}\n交易商户：${merchantLabel}\n商户订单号：${request.bizContent.merchantTransactionId}\n金额：${request.bizContent.amount} ${request.bizContent.currency}`)) return;
+  let cashier = null;
+  const reserve = request.mode === 'redirect' ? () => { cashier = reserveCashierPage(); } : undefined;
+  if (!await confirmLocalAction(`确认发起交易？\n${environmentLabel}\n交易商户：${merchantLabel}\n商户订单号：${request.bizContent.merchantTransactionId}\n金额：${request.bizContent.amount} ${request.bizContent.currency}`, reserve)) return;
   request.productionConfirmed = currentEnv === 'production';
   busy = true;
   renderConfig();
@@ -1096,10 +1192,10 @@ async function submit() {
       $('resultStatus').textContent = '会话已创建，正在加载支付组件…';
       if (request.mode === 'elements') await mountElements(data, request, generation);
       else await mountOnePage(data, request, generation);
-    } else await showResult(data, request, generation);
+    } else if (await showResult(data, request, generation, cashier)) cashier = null;
   }
   catch (error) { if (generation === sessionGeneration) checkoutFailure(error); }
-  finally { newOrderNo(); busy = false; renderConfig(); await refreshOrders().catch(showError); }
+  finally { cashier?.close(); newOrderNo(); busy = false; renderConfig(); await refreshOrders().catch(showError); }
 }
 $('newOrderBtn').onclick = newOrderNo;
 $('merchantTransactionId').oninput = () => { orderNumberEdited = true; };
@@ -1127,6 +1223,7 @@ function useConfig(result) {
     if (currentEnv === 'production') applyProductionDefaults();
     renderProfileSelectors();
     if ($('tradeCountry').value) { selectCountryDefaults(null,true); applyMatchingProfiles(); }
+    else fillInitialProductionRoute();
   }
   renderConfig();
 }
@@ -1396,7 +1493,15 @@ initOptions();
 newOrderNo();
 syncBilling();
 updateRequired();
-fetchPublicIP();
 if (new URLSearchParams(location.search).has('result')) showError(new Error('已从收银台返回；回跳不代表付款成功，请通过服务端通知或查询确认最终状态。'));
-refresh().catch(showError);
-window.addEventListener('pagehide', clearCheckoutSession);
+try {
+  await refresh();
+  if (!restoreDraft()) fillInitialProductionRoute();
+  draftReady = true;
+  if (!$('shopperIP').value) fetchPublicIP();
+} catch (error) { showError(error); }
+$('checkoutForm').addEventListener('input',saveDraft);
+$('checkoutForm').addEventListener('change',saveDraft);
+document.addEventListener('visibilitychange',() => { if (document.hidden) saveDraft(); });
+window.addEventListener('pagehide',() => { saveDraft(); clearCheckoutSession(); });
+window.addEventListener('workbench-superseded',() => { draftReady = false; });

@@ -1,8 +1,8 @@
-import {sign as signBody, verifySign} from './gateway.js?v=2.2.1';
-import {makeActions, validateRows, identity} from './order-actions.js?v=2.2.1';
-import {createMerchants} from './merchants.js?v=2.2.1';
-import * as profiles from './profile-config.js?v=2.2.1';
-import {newWorkbook, decode, checkArchive as checkZip, ipVersion} from './workbook.js?v=2.2.1';
+import {sign as signBody, verifySign} from './gateway.js?v=2.3.0';
+import {makeActions, validateRows, identity} from './order-actions.js?v=2.3.0';
+import {createMerchants} from './merchants.js?v=2.3.0';
+import * as profiles from './profile-config.js?v=2.3.0';
+import {newWorkbook, decode, checkArchive as checkZip, ipVersion} from './workbook.js?v=2.3.0';
 const {currencies:CURRENCIES,rows:DEFAULT_ROWS,compileRows,validateSelection} = globalThis.CheckoutOptions;
 const ENVS = ['production','sandbox'];
 const MAX_UPLOAD = 1024 * 1024;
@@ -198,6 +198,56 @@ function useEnvironment(env) {
   try { storeSetting('environment',env); } catch { /* The current page can still use its in-memory environment. */ }
 }
 const merchants = createMerchants(state,fail);
+// Only a random, single-use handoff ticket crosses the navigation in sessionStorage.
+// Merchant rows stay in JS memory, including during the brief refresh handoff.
+const handoffKey = namespace + 'navigation.v1';
+const documentTicket = crypto.randomUUID();
+let memoryWorker;
+async function prepareMemoryWorker() {
+  if (memoryWorker?.state === 'activated') return memoryWorker;
+  if (!navigator.serviceWorker) return null;
+  let registrationTimer;
+  try {
+    const url = new URL('./merchant-memory.js?v=2.3.0',import.meta.url);
+    const scope = new URL('./merchant-memory/',import.meta.url).href;
+    const load = navigator.serviceWorker.getRegistration(scope).then(current =>
+      current?.active?.scriptURL === url.href ? current : navigator.serviceWorker.register(url,{scope}));
+    // Merchant imports also work when the worker script is slow or unavailable.
+    const registration = await Promise.race([load,new Promise(resolve => { registrationTimer = setTimeout(() => resolve(null),2500); })]);
+    if (!registration) return null;
+    const worker = registration.active || registration.installing || registration.waiting;
+    if (!worker) return null;
+    if (worker.state !== 'activated') await new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); worker.removeEventListener('statechange',changed); resolve(); };
+      const changed = () => { if (['activated','redundant'].includes(worker.state)) finish(); };
+      const timer = setTimeout(finish,2000);
+      worker.addEventListener('statechange',changed); changed();
+    });
+    memoryWorker = worker;
+    return worker.state === 'activated' ? worker : null;
+  } catch { return null; } finally { clearTimeout(registrationTimer); }
+}
+let superseded = false;
+async function resumeMerchants() {
+  let ticket;
+  try {
+    ticket = sessionStorage.getItem(handoffKey);
+    sessionStorage.removeItem(handoffKey);
+  } catch { return; }
+  if (!ticket || !/^[0-9a-f-]{36}$/.test(ticket)) return;
+  const worker = await prepareMemoryWorker();
+  if (!worker) return;
+  const channel = new MessageChannel();
+  const snapshot = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null),2000);
+    channel.port1.onmessage = ({data}) => { clearTimeout(timer); resolve(data); };
+    try { worker.postMessage({type:'take',ticket},[channel.port2]); }
+    catch { clearTimeout(timer); resolve(null); }
+  });
+  channel.port1.close();
+  if (snapshot) merchants.commit(snapshot.merchants,snapshot.selected);
+}
+await resumeMerchants();
 const activePrepays = new Set();
 const profileHelpers = {fail,minor,checkUrl,checkZip};
 const profileSaved = readSetting('profiles.v2');
@@ -226,7 +276,12 @@ function savePaymentConfig(input) {
 }
 const publicCredential = cred => ({accId:mask(cred.accId),clientId:mask(cred.clientId),configured:Boolean(cred.accId && cred.clientId && cred.salt)});
 const publicConfig = () => ({ sessionMerchants:true, env:state.env, environments:ENVS, credentials:Object.fromEntries(ENVS.map(env => [env,{...publicCredential(merchants.active(env)),endpoint:endpoint(env)}])), merchants:Object.fromEntries(ENVS.map(env => [env,state.merchants[env].map(row => ({id:row.id,remark:row.credentials.remark || '',...publicCredential(row.credentials)}))])), selectedMerchantIds:{...state.selectedMerchantIds} });
-function selectMerchant(input) { merchants.select(input); return publicConfig(); }
+function rememberMerchants() {
+  const choices = {...readSetting('merchant-choice.v1')};
+  for (const env of ENVS) if (state.selectedMerchantIds[env]) choices[env] = state.selectedMerchantIds[env];
+  try { storeSetting('merchant-choice.v1',choices); } catch {}
+}
+function selectMerchant(input) { merchants.select(input); rememberMerchants(); return publicConfig(); }
 
 function saveOrders(next) {
   const clean = next.slice(0,1000).map(safeOrder);
@@ -287,7 +342,15 @@ async function importWorkbook(input, strategy = 'file') {
   const targetEnv = !next.merchants[state.env].length && next.importedEnvironments.length === 1 && next.merchants[next.importedEnvironments[0]].length
     ? next.importedEnvironments[0] : state.env;
   if (order) validateBiz(orderFromRow(order), targetEnv, { real: false, rows:state.paymentRows });
-  if (next.importedEnvironments.length) merchants.commit(next.merchants,next.selected);
+  if (next.importedEnvironments.length) {
+    const remembered = readSetting('merchant-choice.v1');
+    for (const env of next.importedEnvironments) {
+      if (!state.merchants[env].length && next.merchants[env].some(row => row.id === remembered?.[env])) next.selected[env] = remembered[env];
+    }
+    merchants.commit(next.merchants,next.selected);
+    rememberMerchants();
+    await prepareMemoryWorker();
+  }
   useEnvironment(targetEnv);
   return { ...publicConfig(), order, importedEnvironments:next.importedEnvironments, importSummary:next.importSummary };
 }
@@ -479,8 +542,32 @@ function clearSession() {
   elementSessions.clear();
   state.logs = [];
 }
-window.addEventListener('pagehide',clearSession);
-window.addEventListener('pageshow',event => { if (event.persisted) location.reload(); });
+window.addEventListener('pagehide',event => {
+  if (superseded) return;
+  if (ENVS.some(env => state.merchants[env].length)) {
+    try {
+      sessionStorage.setItem(handoffKey,documentTicket);
+      memoryWorker?.postMessage({type:'park',ticket:documentTicket,snapshot:{merchants:state.merchants,selected:state.selectedMerchantIds}});
+    } catch {}
+  }
+  if (!event.persisted) merchants.clear();
+  elementSessions.clear();
+  state.logs = [];
+});
+window.addEventListener('pageshow',event => {
+  if (!event.persisted) return;
+  try {
+    if (sessionStorage.getItem(handoffKey) === documentTicket) {
+      sessionStorage.removeItem(handoffKey);
+      memoryWorker?.postMessage({type:'discard',ticket:documentTicket});
+      return;
+    }
+  } catch {}
+  // Another document used this tab in the meantime. Read its latest draft and merchant state.
+  superseded = true;
+  window.dispatchEvent(new Event('workbench-superseded'));
+  location.reload();
+});
 
 export async function post(path,input) {
   switch (path) {
@@ -490,6 +577,7 @@ export async function post(path,input) {
     case '/api/config/select': return selectMerchant(input);
     case '/api/config/clear':
       clearSession();
+      try { sessionStorage.removeItem(namespace + 'merchant-choice.v1'); } catch {}
       return publicConfig();
     case '/api/import': return importWorkbook(input.files ?? input.base64,input.strategy);
     case '/api/profiles/preview': return previewProfiles(input.base64);
