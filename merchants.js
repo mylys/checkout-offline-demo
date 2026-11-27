@@ -1,4 +1,4 @@
-import {sha256} from './gateway.js?v=2.2.0';
+import {sha256} from './gateway.js?v=2.2.1';
 const ENVS = ['production', 'sandbox'];
 const empty = () => ({ accId:'', clientId:'', salt:'' });
 const blankMerchant = credentials => !['accId','clientId','salt','remark'].some(key => credentials[key]);

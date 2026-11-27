@@ -1,4 +1,4 @@
-import {ipVersion, newWorkbook, decode} from './workbook.js?v=2.2.0';
+import {ipVersion, newWorkbook, decode} from './workbook.js?v=2.2.1';
 const { countries, currencies, rows: defaultRows, compileRows } = globalThis.CheckoutOptions;
 const BASE = ['id','name','country','paymentMethod','currency','synthetic'];
 const SHEETS = {
@@ -22,6 +22,14 @@ const regions = {
   KR:['Seoul','Gangnam-gu','06236','ko','KRW'], SG:['Singapore','Singapore','018956','en','SGD']
 };
 function emptyData() { return Object.fromEntries(Object.keys(SHEETS).map(key => [key, []])); }
+export function geographicPresets(routes) {
+  return countries.filter(({value}) => routes.some(rule => rule.country === value)).map(({value:country,label:name}) => {
+    const options = routes.filter(rule => rule.country === country);
+    const [,,,language,preferred] = regions[country];
+    const currency = options.find(rule => rule.currency === preferred)?.currency || options[0].currency;
+    return {id:'@country-' + country, country, name, language, currency};
+  });
+}
 function defaults(paymentRows = defaultRows) {
   const data = emptyData(), valid = compileRows(paymentRows).rules;
   for (const { value:country, label } of countries) {

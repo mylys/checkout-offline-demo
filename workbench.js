@@ -1,4 +1,5 @@
-import {api,post,download} from './browser-api.js?v=2.2.0';
+import {api,post,download} from './browser-api.js?v=2.2.1';
+import {geographicPresets} from './profile-config.js?v=2.2.1';
 let currentEnv = 'production';
 let currentMode = 'redirect';
 let config = null;
@@ -100,6 +101,16 @@ const profileSections = {
   shipping: { select:'shippingPreset', reference:'shippingId', label:'配送地址' },
   billing: { select:'billingPreset', reference:'billingId', label:'账单地址' }
 };
+const appliedProfiles = new Map();
+function releaseProfile(section) {
+  const previous = appliedProfiles.get(section);
+  if (!previous) return;
+  appliedProfiles.delete(section);
+  for (const [id,value] of previous.values) {
+    if ($(id).value === value) $(id).value = '';
+  }
+  $(profileSections[section].select).value = '';
+}
 let addressRevision = 0;
 let addressRequest = 0;
 let ipRevision = 0;
@@ -196,6 +207,17 @@ function renderProfileSafety() {
 function productionProfileAllowed(item) {
   return currentEnv !== 'production' || (!item.synthetic && !Object.values(item).some(value => typeof value === 'string' && value.includes('{{origin}}')));
 }
+function countryPresets() {
+  const configured = (profiles?.data.countries || []).filter(productionProfileAllowed);
+  const fallback = geographicPresets(paymentRules).filter(row => !configured.some(item => item.country === row.country));
+  return [...configured, ...fallback];
+}
+function matchesRoute(item) {
+  const country = $('tradeCountry').value, currency = $('currency').value;
+  return (!country || !item.country || item.country === country) &&
+    (!currency || !item.currency || item.currency === currency) &&
+    (!item.paymentMethod || selectedMethods.has(item.paymentMethod));
+}
 function applyProductionDefaults() {
   if (currentEnv !== 'production') return;
   const cleared = (syntheticProfile || syntheticAddress || sandboxFixture);
@@ -208,7 +230,14 @@ function applyProductionDefaults() {
 }
 $('applyProductionDefaults').onclick = applyProductionDefaults;
 function renderProfileSelectors() {
-  const languages = [...(profiles?.data.countries || []), ...(profiles?.data.buyers || [])].map(item => item.language).filter(Boolean);
+  const sampleButton = $('useCountrySample');
+  const country = $('tradeCountry').value;
+  const buyers = (profiles?.data.buyers || []).filter(matchesRoute);
+  sampleButton.hidden = currentEnv !== 'production' || !country ||
+    buyers.some(productionProfileAllowed) || !profiles?.data.rules.some(rule =>
+      rule.country === country && matchesRoute(rule) && buyers.some(item => item.id === rule.buyerId && item.synthetic));
+  sampleButton.disabled = busy;
+  const languages = [...countryPresets(), ...(profiles?.data.buyers || [])].map(item => item.language).filter(Boolean);
   for (const language of new Set(languages)) {
     if (![...$('language').options].some(option => option.value === language)) {
       const option = document.createElement('option'); option.value = language; option.textContent = language; $('language').appendChild(option);
@@ -218,25 +247,39 @@ function renderProfileSelectors() {
     const select = $(info.select), previous = select.value;
     select.replaceChildren();
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = section === 'countries' ? '手工选择国家' : '手工填写／未选预设'; select.appendChild(empty);
-    for (const item of (profiles?.data[section] || []).filter(productionProfileAllowed)) {
+    const candidates = section === 'countries' ? countryPresets() : (profiles?.data[section] || []).filter(matchesRoute);
+    const allowed = candidates.filter(productionProfileAllowed);
+    for (const item of allowed) {
       const option = document.createElement('option'); option.value = item.id;
       const name = item.name;
       option.textContent = `${name}${item.synthetic ? ' · 测试' : ''}${item.country ? ` · ${item.country}` : ''}${item.currency ? ` / ${item.currency}` : ''}`;
       if (section === 'countries') option.disabled = !paymentRules.some(rule => rule.country === item.country && (!item.currency || rule.currency === item.currency));
       select.appendChild(option);
     }
+    if (section !== 'countries' && currentEnv === 'production' && $('tradeCountry').value) {
+      const samples = candidates.filter(row => row.synthetic);
+      if (samples.length) {
+        const group = document.createElement('optgroup');
+        group.label = '切换到沙箱并使用示例';
+        for (const row of samples) group.append(new Option(row.name,'@sandbox:' + row.id));
+        select.append(group);
+      }
+      if (!allowed.length) select.add(new Option('导入生产资料 Excel…','@profiles'));
+    }
     select.value = [...select.options].some(option => option.value === previous) ? previous : '';
   }
 }
 function syncCountryPreset() {
-  const current = profiles?.data.countries.find(item => productionProfileAllowed(item) && item.country === $('tradeCountry').value && (!item.currency || item.currency === $('currency').value));
+  const current = countryPresets().find(item => item.country === $('tradeCountry').value && (!item.currency || item.currency === $('currency').value));
   $('countryPreset').value = current?.id || '';
 }
-function selectCountryDefaults(chosen) {
+function selectCountryDefaults(chosen, preserveCurrency = false) {
   const country = $('tradeCountry').value;
   if (chosen && !productionProfileAllowed(chosen)) return;
-  const candidates = (profiles?.data.countries || []).filter(item => productionProfileAllowed(item) && item.country === country && paymentRules.some(rule => rule.country === country && (!item.currency || rule.currency === item.currency)));
-  const item = chosen || candidates.find(item => item.currency === $('currency').value) || candidates[0];
+  const candidates = countryPresets().filter(item => item.country === country && paymentRules.some(rule => rule.country === country && (!item.currency || rule.currency === item.currency)));
+  const currency = $('currency').value;
+  const item = chosen || candidates.find(item => item.currency === currency)
+    || candidates.find(item => !item.currency) || (!preserveCurrency || !currency ? candidates[0] : undefined);
   if (item?.currency) $('currency').value = item.currency;
   else if (!$('currency').value) {
     const currencies = [...new Set(paymentRules.filter(rule => rule.country === country).map(rule => rule.currency))];
@@ -257,6 +300,8 @@ function applyProfile(section, item, automatic = false) {
   if (!productionProfileAllowed(item)) {
     setAuxStatus('profileStatus', '生产环境不应用沙箱测试预设，请填写真实资料。', 'error'); return;
   }
+  const previous = appliedProfiles.get(section);
+  if (previous && previous.item !== item) releaseProfile(section);
   if (item.synthetic) syntheticProfile = true;
   if (section === 'shipping' || section === 'billing') {
     addressRevision++; addressRequest++;
@@ -290,12 +335,16 @@ function applyProfile(section, item, automatic = false) {
     if (!automatic) amountEdited = false;
     synchronizeAmount(amountEdited ? 'amount' : 'quantity');
   }
+  const fields = info.fields ? info.fields.filter(id => id !== 'shopperIP' || item.shopperIP)
+    : addressFields.map(field => section + field[0].toUpperCase() + field.slice(1));
+  if (section === 'products' && !amountEdited) fields.push('amount');
+  appliedProfiles.set(section,{item,country:$('tradeCountry').value,values:new Map(fields.map(id => [id,$(id).value]))});
   updateRequired(); renderProfileSafety();
 }
 function profileRuleRank(rule, country, currency, method) {
-  if (currentEnv === 'production' && Object.entries(profileSections).some(([section, info]) => {
+  if (currentEnv === 'production' && !Object.entries(profileSections).some(([section, info]) => {
     const item = profiles?.data[section].find(item => item.id === rule[info.reference]);
-    return item && !productionProfileAllowed(item);
+    return item && productionProfileAllowed(item);
   })) return -1;
   const wildcard = value => !value || value === '*';
   if (![ ['country',country], ['currency',currency], ['paymentMethod',method] ].every(([key,value]) => wildcard(rule[key]) || rule[key] === value)) return -1;
@@ -303,17 +352,35 @@ function profileRuleRank(rule, country, currency, method) {
 }
 function applyMatchingProfiles() {
   const country = $('tradeCountry').value, currency = $('currency').value;
+  for (const [section,previous] of appliedProfiles) {
+    if (previous.country !== country || !matchesRoute(previous.item) || !productionProfileAllowed(previous.item) ||
+        !profiles?.data[section].some(row => row.id === previous.item.id)) releaseProfile(section);
+  }
+  syncBilling();
+  renderProfileSelectors();
+  if (!$('language').value && $('countryPreset').value) {
+    $('language').value = countryPresets().find(row => row.id === $('countryPreset').value)?.language || '';
+  }
   if (!profiles) { setAuxStatus('profileStatus', '资料配置尚未加载，保留现有内容。', 'progress'); return; }
   if (!country || !currency) { setAuxStatus('profileStatus', '请选择合法国家及币种后自动匹配；现有内容保持不变。'); return; }
   const methods = [...new Set(paymentRules.filter(rule => rule.country === country && rule.currency === currency && selectedMethods.has(rule.method)).map(rule => rule.method))];
   const winners = (methods.length ? methods : ['']).map((method, methodIndex) => {
     return profiles.data.rules.map((rule, index) => ({rule,index,method,methodIndex,rank:profileRuleRank(rule,country,currency,method)})).filter(item => item.rank >= 0).sort((a,b) => b.rank - a.rank || a.index - b.index)[0];
   }).filter(Boolean).sort((a,b) => b.rank - a.rank || a.index - b.index || a.methodIndex - b.methodIndex);
-  if (!winners.length) { setAuxStatus('profileStatus', `未命中 ${country} / ${currency}${methods.length ? ` / ${methods.join('、')}` : ''} 的资料规则；所有分区保留原内容。`); return; }
   const winner = winners[0], applied = [], kept = [];
   for (const [section, info] of Object.entries(profileSections)) {
-    const item = profiles?.data[section].find(item => productionProfileAllowed(item) && item.id === winner.rule[info.reference]);
+    const candidates = profiles.data[section].filter(item => productionProfileAllowed(item) && matchesRoute(item));
+    const specific = candidates.filter(item => item.country === country);
+    const item = candidates.find(item => item.id === winner?.rule[info.reference])
+      || (specific.length === 1 ? specific[0] : undefined);
     if (item) { applyProfile(section, item, true); applied.push(info.label); } else kept.push(info.label);
+  }
+  if (!winner) {
+    const message = applied.length ? `${country} / ${currency} 已填入${applied.join('、')}。`
+      : currentEnv === 'production' ? `${country} / ${currency}：可从商品或买家下拉框导入生产资料，或切到沙箱使用示例。`
+      : `${country} / ${currency}：请在各分区选择或导入适用的资料。`;
+    setAuxStatus('profileStatus',message,'notice');
+    return;
   }
   const conflict = new Set(winners.map(item => item.rule.id)).size > 1;
   setAuxStatus('profileStatus', `已自动应用“${winner.rule.name}”（${['通用','单维条件','双维条件','精确三元'][winner.rank]}${winner.method ? `，${winner.method}` : ''}）：${applied.join('、') || '无可填入分区'}。${kept.length ? `未命中分区保留原内容：${kept.join('、')}。` : ''}${conflict ? '多支付方式命中不同规则；按匹配条件具体度最高、规则行顺序稳定选首条。' : ''}`);
@@ -324,6 +391,7 @@ async function refreshProfiles() {
   $('profilesCurrent').textContent = JSON.stringify(profiles, null, 2);
 }
 function clearProfileData() {
+  appliedProfiles.clear();
   addressRevision++; addressRequest++; ipRevision++; ipRequest++;
   for (const info of Object.values(profileSections)) {
     for (const id of info.fields || []) $(id).value = '';
@@ -339,15 +407,30 @@ function clearProfileData() {
 }
 $('clearProfileData').onclick = clearProfileData;
 $('countryPreset').onchange = () => {
-  const item = profiles?.data.countries.find(item => item.id === $('countryPreset').value); if (!item) return;
+  const item = countryPresets().find(item => item.id === $('countryPreset').value); if (!item) return;
   if (!paymentRules.some(rule => rule.country === item.country && (!item.currency || rule.currency === item.currency))) { setAuxStatus('profileStatus', '该国家预设不在当前合法支付组合中，未应用。', 'error'); return; }
   selectedMethods.clear(); showSelectedMethods(); addressRequest++;
   $('tradeCountry').value = item.country; renderRouting(); selectCountryDefaults(item); applyMatchingProfiles(); updateRequired();
 };
 for (const [section, info] of Object.entries(profileSections)) {
   $(info.select).addEventListener('click', event => event.stopPropagation());
-  $(info.select).onchange = () => {
-    const item = profiles?.data[section].find(item => item.id === $(info.select).value);
+  $(info.select).onchange = async () => {
+    const value = $(info.select).value;
+    if (value === '@profiles') {
+      $(info.select).value = '';
+      await $('openProfiles').onclick();
+      return;
+    }
+    const sample = value.startsWith('@sandbox:');
+    const item = profiles?.data[section].find(item => item.id === (sample ? value.slice(9) : value));
+    if (sample) {
+      await switchEnvironment('sandbox');
+      if (currentEnv !== 'sandbox') { renderProfileSelectors(); return; }
+    }
+    if (item?.country && !$('tradeCountry').value) {
+      $('tradeCountry').value = item.country;
+      renderRouting(); selectCountryDefaults(); applyMatchingProfiles();
+    }
     if (item) { applyProfile(section,item); setAuxStatus('profileStatus', `已手动应用${info.label}预设“${item.name}”；下次国家、币种或支付方式变化时会重新匹配。`); }
   };
   for (const id of info.fields || []) $(id).addEventListener('input', () => { $(info.select).value = ''; });
@@ -404,7 +487,7 @@ $('profilesInput').onchange = async event => {
     const result = await post('/api/profiles/preview', {base64});
     profilesPreview = result.data; profilesPreviewVersion = result.version;
     $('profilesPreview').textContent = JSON.stringify({summary:result.summary,data:result.data}, null, 2);
-    $('profilesMessage').textContent = '校验通过，请核对以下全部 Sheet 内容。点击“确认保存预览配置”才会保存到本标签页；当前表单不自动改动。';
+    $('profilesMessage').textContent = '校验通过，请核对以下全部 Sheet 内容。确认保存后按当前国家重新匹配，并填入对应资料。';
     $('saveProfiles').disabled = false;
   } catch (error) { $('profilesMessage').textContent = error.message; }
   finally { profilesBusy = false; $('profilesInput').disabled = false; event.target.value = ''; }
@@ -414,8 +497,10 @@ $('saveProfiles').onclick = async () => {
   profilesBusy = true; $('saveProfiles').disabled = true; $('profilesInput').disabled = true;
   try {
     profiles = await post('/api/profiles', {data:profilesPreview,expectedVersion:profilesPreviewVersion});
-    profilesPreview = null; renderProfileSelectors(); $('profilesCurrent').textContent = JSON.stringify(profiles,null,2);
-    $('profilesMessage').textContent = '资料配置已保存，各分区预设列表已更新。当前表单保持不变；选择预设或改变国家、币种、支付方式后应用。';
+    profilesPreview = null; clearCheckoutSession(); renderProfileSelectors();
+    if ($('tradeCountry').value) { selectCountryDefaults(null,true); applyMatchingProfiles(); }
+    $('profilesCurrent').textContent = JSON.stringify(profiles,null,2);
+    $('profilesMessage').textContent = '资料配置已保存，已按当前国家更新预设。';
   } catch (error) { $('profilesMessage').textContent = error.message; $('saveProfiles').disabled = false; }
   finally { profilesBusy = false; $('profilesInput').disabled = false; }
 };
@@ -446,7 +531,15 @@ function renderMerchantOptions() {
     const id = accounts.get(accountKeys[i]) > 1 ? ` · ${item.id}` : '';
     return [item.id,labels[i] + account + id];
   });
-  if (!options.length) options.push(['',config ? '暂无商户，请在商户设置中导入' : '正在加载商户…']);
+  if (!options.length) {
+    options.push(['',config ? '暂无商户，请导入 Excel' : '正在加载商户…']);
+    if (config) {
+      options.push(['@import','导入商户 Excel…']);
+      const other = currentEnv === 'production' ? 'sandbox' : 'production';
+      const count = config.merchants[other].length;
+      if (count) options.push(['@' + other,`切换到${other === 'production' ? '生产' : '沙箱'}（${count} 个商户）`]);
+    }
+  }
   for (const field of ['transactionMerchant','merchantSelect']) {
     const select = $(field);
     select.replaceChildren();
@@ -455,7 +548,7 @@ function renderMerchantOptions() {
       option.value = value; option.textContent = label; select.appendChild(option);
     }
     select.value = selectedMerchantId();
-    select.disabled = busy || !merchants.length;
+    select.disabled = busy || !config;
   }
   $('merchantCount').textContent = config ? `${currentEnv === 'production' ? '生产' : '沙箱'} · ${merchants.length} 个商户` : '';
 }
@@ -468,6 +561,7 @@ async function openConfigDialog() {
 $('envMenuToggle').onclick = () => { const open = $('envMenu').hidden; $('envMenu').hidden = !open; $('envMenuToggle').setAttribute('aria-expanded', String(open)); };
 $('openMerchantConfig').onclick = openConfigDialog;
 $('sessionImport').onclick = openConfigDialog;
+$('useCountrySample').onclick = () => switchEnvironment('sandbox');
 $('closeConfig').onclick = () => $('configDialog').close();
 $('configDialog').addEventListener('close', () => {
   $('restoreMerchants').checked = false;
@@ -486,7 +580,16 @@ async function switchMerchant(merchantId) {
   } catch (error) { showError(error); }
   finally { busy = false; renderConfig(); }
 }
-for (const field of ['transactionMerchant','merchantSelect']) $(field).onchange = () => switchMerchant($(field).value);
+for (const field of ['transactionMerchant','merchantSelect']) $(field).onchange = () => {
+  const choice = $(field).value;
+  if (choice === '@import') {
+    renderMerchantOptions();
+    if (!$('configDialog').open) openConfigDialog();
+    $('excelInput').click();
+  } else if (choice.startsWith('@')) {
+    switchEnvironment(choice.slice(1));
+  } else switchMerchant(choice);
+};
 document.addEventListener('click', event => { if (!event.target.closest('.environment-menu')) closeEnvMenu(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('envMenu').hidden) { closeEnvMenu(); $('envMenuToggle').focus(); } });
 document.addEventListener('focusin', event => { if (!$('envMenu').hidden && !event.target.closest('.environment-menu')) closeEnvMenu(); });
@@ -800,7 +903,7 @@ function mountSdkFrame(payload, request, generation) {
   if (generation !== sessionGeneration) return Promise.resolve();
   const frame = document.createElement('iframe');
   frame.className = 'sdk-checkout-frame'; frame.title = `${request.mode === 'onepage' ? 'OnePage' : request.mode === 'elements' ? 'Element SDK' : '内嵌收银台'}支付组件`;
-  frame.src = './sdk-host.html?v=2.2.0'; frame.referrerPolicy = 'no-referrer';
+  frame.src = './sdk-host.html?v=2.2.1'; frame.referrerPolicy = 'no-referrer';
   frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
   frame.setAttribute('allow', 'payment *');
   const channel = crypto.randomUUID();
@@ -1016,21 +1119,30 @@ $('refreshBtn').onclick = async () => {
 };
 $('reloadOrders').onclick = () => refreshOrders().catch(showError);
 $('checkoutForm').onsubmit = event => { event.preventDefault(); submit(); };
-document.querySelectorAll('.env-btn').forEach(btn => btn.onclick = async () => {
+function useConfig(result) {
+  const changed = currentEnv !== result.env;
+  config = result;
+  setEnvironment(result.env);
+  if (changed) {
+    if (currentEnv === 'production') applyProductionDefaults();
+    renderProfileSelectors();
+    if ($('tradeCountry').value) { selectCountryDefaults(null,true); applyMatchingProfiles(); }
+  }
+  renderConfig();
+}
+async function switchEnvironment(env) {
   if (busy) return;
   closeEnvMenu();
   busy = true; renderConfig();
   clearCheckoutSession();
   try {
     configRevision++;
-    config = await post('/api/env', { env: btn.dataset.env }); setEnvironment(config.env);
-    if (currentEnv === 'production') applyProductionDefaults();
-    else if ($('tradeCountry').value) { selectCountryDefaults(); applyMatchingProfiles(); }
-    renderConfig();
+    useConfig(await post('/api/env', {env}));
   }
   catch (error) { showError(error); }
   finally { busy = false; renderConfig(); }
-});
+}
+document.querySelectorAll('.env-btn').forEach(btn => btn.onclick = () => switchEnvironment(btn.dataset.env));
 $('checkoutMode').onchange = () => {
   if (busy || !['redirect', 'embedded', 'elements', 'onepage'].includes($('checkoutMode').value)) { $('checkoutMode').value = currentMode; return; }
   currentMode = $('checkoutMode').value;
@@ -1125,9 +1237,7 @@ $('excelInput').onchange = async event => {
     const workbooks = await Promise.all(files.map(readExcel));
     configRevision++;
     const result = await post('/api/import', {files:workbooks,strategy:restore ? 'file' : 'merge'});
-    config = result;
-    setEnvironment(config.env);
-    renderConfig();
+    useConfig(result);
     if (result.order) {
       addressRevision++; addressRequest++;
       $('tradeCountry').value = result.order.tradeCountry || '';

@@ -1,8 +1,8 @@
-import {sign as signBody, verifySign} from './gateway.js?v=2.2.0';
-import {makeActions, validateRows, identity} from './order-actions.js?v=2.2.0';
-import {createMerchants} from './merchants.js?v=2.2.0';
-import * as profiles from './profile-config.js?v=2.2.0';
-import {newWorkbook, decode, checkArchive as checkZip, ipVersion} from './workbook.js?v=2.2.0';
+import {sign as signBody, verifySign} from './gateway.js?v=2.2.1';
+import {makeActions, validateRows, identity} from './order-actions.js?v=2.2.1';
+import {createMerchants} from './merchants.js?v=2.2.1';
+import * as profiles from './profile-config.js?v=2.2.1';
+import {newWorkbook, decode, checkArchive as checkZip, ipVersion} from './workbook.js?v=2.2.1';
 const {currencies:CURRENCIES,rows:DEFAULT_ROWS,compileRows,validateSelection} = globalThis.CheckoutOptions;
 const ENVS = ['production','sandbox'];
 const MAX_UPLOAD = 1024 * 1024;
@@ -112,9 +112,23 @@ async function makeTemplate() {
   orders.addRow(Object.fromEntries(ORDER_FIELDS.map(k => [k, ''])));
   return new Uint8Array(await wb.xlsx.writeBuffer());
 }
-function rowsFromSheet(ws, allowed) {
+const merchantHeaders = new Map(Object.entries({
+  environment:'environment', env:'environment', '环境':'environment', '环境配置':'environment',
+  importmode:'importMode', accid:'accId', clientid:'clientId', salt:'salt',
+  remark:'Remark', '备注':'Remark', '商户备注':'Remark'
+}));
+const merchantEnvironments = new Map(Object.entries({
+  production:'production', prod:'production','生产':'production','生产环境':'production',
+  sandbox:'sandbox', test:'sandbox','测试':'sandbox','沙箱':'sandbox','沙箱环境':'sandbox','测试环境':'sandbox'
+}));
+function rowsFromSheet(ws, allowed, aliases) {
   if (!ws) return []; if (ws.rowCount > 1000 || ws.columnCount > 40) fail('工作表过大'); const headers = new Map();
-  ws.getRow(1).eachCell((c, n) => { if (typeof c.value !== 'string' || !allowed.includes(c.value) || headers.has(c.value)) fail('表头无效或重复'); headers.set(c.value, n); });
+  ws.getRow(1).eachCell((cell, n) => {
+    const raw = typeof cell.value === 'string' ? cell.value.trim() : '';
+    const key = aliases ? aliases.get(raw.toLowerCase()) : raw;
+    if (!allowed.includes(key) || headers.has(key)) fail(`${ws.name}第 ${n} 列表头无效或重复，请核对模板`);
+    headers.set(key,n);
+  });
   const result = [];
   for (let r = 2; r <= ws.rowCount; r++) {
     const out = {}; const row = ws.getRow(r);
@@ -177,7 +191,12 @@ const migrated = (readSetting('receipts.v1') || []).filter(r => r && typeof r.id
 const orders = (readSetting('orders.v2') || migrated).map(safeOrder);
 for (const order of orders) if (order.status === 'REQUESTING') order.status = 'UNKNOWN';
 const paymentSaved = readSetting('payment.v2');
-const state = {env:'production', orders, logs:[], paymentRows:paymentSaved?.rows || DEFAULT_ROWS, paymentVersion:paymentSaved?.version || 'default-v1'};
+const lastEnv = readSetting('environment');
+const state = {env:ENVS.includes(lastEnv) ? lastEnv : 'production', orders, logs:[], paymentRows:paymentSaved?.rows || DEFAULT_ROWS, paymentVersion:paymentSaved?.version || 'default-v1'};
+function useEnvironment(env) {
+  state.env = environment(env);
+  try { storeSetting('environment',env); } catch { /* The current page can still use its in-memory environment. */ }
+}
 const merchants = createMerchants(state,fail);
 const activePrepays = new Set();
 const profileHelpers = {fail,minor,checkUrl,checkZip};
@@ -240,9 +259,19 @@ async function importWorkbook(input, strategy = 'file') {
       checkZip(buffer);
       const wb = await newWorkbook();
       try { await wb.xlsx.load(buffer); } catch { fail('xlsx 工作簿无法读取'); }
-      const sheet = wb.getWorksheet('环境配置'), orders = wb.getWorksheet('订单请求');
+      const orders = wb.getWorksheet('订单请求');
+      let sheet = wb.getWorksheet('环境配置');
+      if (!sheet && !orders && wb.worksheets.length === 1) {
+        const candidate = wb.worksheets[0];
+        const keys = candidate.getRow(1).values.map(raw => merchantHeaders.get(String(raw).trim().toLowerCase()));
+        if (['environment','accId','clientId','salt'].every(key => keys.includes(key))) sheet = candidate;
+      }
       if (!sheet && !orders) fail('缺少“环境配置”或“订单请求”工作表');
-      const rows = rowsFromSheet(sheet, ['environment','importMode','clientId','accId','salt','Remark']);
+      const rows = rowsFromSheet(sheet, ['environment','importMode','clientId','accId','salt','Remark'], merchantHeaders);
+      for (const row of rows) {
+        row.environment = merchantEnvironments.get(row.environment?.toLowerCase());
+        if (!row.environment) fail(`环境配置第 ${row._excelRow} 行须指定 production（生产）或 sandbox（沙箱）`);
+      }
       if (files.length > 1) for (const row of rows) Object.defineProperty(row,'_fileNumber',{value:index + 1});
       configRows.push(...rows);
       orderRows.push(...rowsFromSheet(orders, ORDER_FIELDS));
@@ -254,8 +283,12 @@ async function importWorkbook(input, strategy = 'file') {
   }
   const next = await merchants.importRows(configRows,strategy);
   const order = orderRows[0] || null;
-  if (order) validateBiz(orderFromRow(order), state.env, { real: false, rows:state.paymentRows });
+  if (!order && !next.importedEnvironments.length) fail('未找到商户或订单。请在「环境配置」填写 environment、accId、clientId 和 salt 后再导入。');
+  const targetEnv = !next.merchants[state.env].length && next.importedEnvironments.length === 1 && next.merchants[next.importedEnvironments[0]].length
+    ? next.importedEnvironments[0] : state.env;
+  if (order) validateBiz(orderFromRow(order), targetEnv, { real: false, rows:state.paymentRows });
   if (next.importedEnvironments.length) merchants.commit(next.merchants,next.selected);
+  useEnvironment(targetEnv);
   return { ...publicConfig(), order, importedEnvironments:next.importedEnvironments, importSummary:next.importSummary };
 }
 function testDataFlags(input) {
@@ -452,7 +485,7 @@ window.addEventListener('pageshow',event => { if (event.persisted) location.relo
 export async function post(path,input) {
   switch (path) {
     case '/api/env':
-      state.env = environment(input.env);
+      useEnvironment(input.env);
       return publicConfig();
     case '/api/config/select': return selectMerchant(input);
     case '/api/config/clear':
