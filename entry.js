@@ -1,12 +1,9 @@
-const desktop = new URLSearchParams(location.search).get('desktop') === '1';
-document.querySelector('#browser').hidden = desktop;
-document.querySelector('#desktop').hidden = !desktop;
-if (desktop) {
-  const link = document.querySelector('#view-switch');
-  link.href = './';
-  link.textContent = '浏览器版';
-  await import('./local-workspace.js?v=2.1.0');
+if (new URLSearchParams(location.search).get('desktop') === '1') {
+  document.querySelector('link[rel=stylesheet]').href = './styles.css?v=2.2.0';
+  document.body.replaceChildren(document.querySelector('#desktop-view').content.cloneNode(true));
+  await import('./local-workspace.js?v=2.2.0');
 } else {
-  await import('./checkout-options.js?v=2.1.0');
-  await import('./workbench.js?v=2.1.0');
+  await import('./checkout-options.js?v=2.2.0');
+  await import('./workbench.js?v=2.2.0');
+  if (location.hash === '#orders') document.getElementById('ordersWorkspace').scrollIntoView();
 }
